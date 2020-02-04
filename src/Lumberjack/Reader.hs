@@ -94,6 +94,8 @@ decompress !raw = do
       in Parser.effect Builder.new >>= go
     ) contents
 
+-- | Receive and frame and decode its messages. This acknowledges every
+-- frame after receiving it. 
 read :: Connection -> IO (Either Exception Frame)
 read conn = receiveExactly conn (1 + 1 + 4) >>= \case
   Left err -> case err of
@@ -113,48 +115,38 @@ read conn = receiveExactly conn (1 + 1 + 4) >>= \case
         0x44 -> pure (Left ReceivedData)
         -- Compressed payloads are very similar to JSON payloads.
         -- The user is responsible for performing decompression.
-        0x43 -> receiveExactly conn 4 >>= \case
-          Left err -> case err of
-            ReceiveShutdown -> pure (Left ClosedConnectionPoorly)
-            ReceiveReset -> pure (Left ResetConnection)
-            ReceiveHostUnreachable -> pure (Left Unreachable)
-          Right barrSz -> do
-            let szW = BE.indexByteArray barrSz 0 :: Word32
-            let sz = fromIntegral @Word32 @Int szW
-            receiveExactly conn sz >>= \case
-              Left err -> case err of
-                ReceiveShutdown -> pure (Left ClosedConnectionPoorly)
-                ReceiveReset -> pure (Left ResetConnection)
-                ReceiveHostUnreachable -> pure (Left Unreachable)
-              Right payload -> case decompress (Bytes.fromByteArray payload) of
-                Just chunks -> ack (lastSequenceNumber chunks) conn >>= \case
-                  Left err -> case err of
-                    SendShutdown -> pure (Left ClosedConnectionPoorly)
-                    SendReset -> pure (Left ResetConnection)
-                  Right _ -> pure (Right (Compressed payload chunks))
-                Nothing -> pure (Left MalformedCompressedFrame)
-        -- It is up to the user to decode the JSON payload.
-        0x4A -> receiveExactly conn 4 >>= \case
-          Left err -> case err of
-            ReceiveShutdown -> pure (Left ClosedConnectionPoorly)
-            ReceiveReset -> pure (Left ResetConnection)
-            ReceiveHostUnreachable -> pure (Left Unreachable)
-          Right barrSz -> do
-            let szW = BE.indexByteArray barrSz 0 :: Word32
-            let sz = fromIntegral @Word32 @Int szW
-                seqNo = u32
-            receiveExactly conn sz >>= \case
-              Left err -> case err of
-                ReceiveShutdown -> pure (Left ClosedConnectionPoorly)
-                ReceiveReset -> pure (Left ResetConnection)
-                ReceiveHostUnreachable -> pure (Left Unreachable)
-              Right payload -> ack seqNo conn >>= \case
+        0x43 -> do
+          let szW = u32
+              sz = fromIntegral @Word32 @Int szW
+          receiveExactly conn sz >>= \case
+            Left err -> case err of
+              ReceiveShutdown -> pure (Left ClosedConnectionPoorly)
+              ReceiveReset -> pure (Left ResetConnection)
+              ReceiveHostUnreachable -> pure (Left Unreachable)
+            Right payload -> case decompress (Bytes.fromByteArray payload) of
+              Just chunks -> ack (lastSequenceNumber chunks) conn >>= \case
                 Left err -> case err of
                   SendShutdown -> pure (Left ClosedConnectionPoorly)
                   SendReset -> pure (Left ResetConnection)
-                Right _ -> do
-                  let !payload' = Bytes.fromByteArray payload
-                  pure (Right (Uncompressed (Json seqNo payload')))
+                Right _ -> pure (Right (Compressed payload chunks))
+              Nothing -> pure (Left MalformedCompressedFrame)
+        -- It is up to the user to decode the JSON payload.
+        0x4A -> do
+          let szW = u32
+              sz = fromIntegral @Word32 @Int szW
+              seqNo = u32
+          receiveExactly conn sz >>= \case
+            Left err -> case err of
+              ReceiveShutdown -> pure (Left ClosedConnectionPoorly)
+              ReceiveReset -> pure (Left ResetConnection)
+              ReceiveHostUnreachable -> pure (Left Unreachable)
+            Right payload -> ack seqNo conn >>= \case
+              Left err -> case err of
+                SendShutdown -> pure (Left ClosedConnectionPoorly)
+                SendReset -> pure (Left ResetConnection)
+              Right _ -> do
+                let !payload' = Bytes.fromByteArray payload
+                pure (Right (Uncompressed (Json seqNo payload')))
         _ -> pure (Left InvalidFrameType)
       0x31 -> pure (Left VersionOne)
       _ -> pure (Left InvalidVersion)
