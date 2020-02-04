@@ -12,6 +12,7 @@ module Lumberjack.Reader
   ) where
 
 import Prelude hiding (read)
+import Data.Bifunctor (bimap)
 import Data.Word (Word8,Word32)
 import Data.Foldable (foldl')
 import Data.Bytes.Types (MutableBytes(MutableBytes))
@@ -66,31 +67,34 @@ data Exception
   | InvalidFrameType
     -- ^ The writer specified a lumberjack protocol version that
     -- does not exist.
+  | Decompression
+    -- ^ A compressed frame could not be decompressed.
   | MalformedCompressedFrame
-    -- ^ A compressed frame could not be parsed.
+    -- ^ A compressed frame was decompressed successfully, but its
+    -- payload was invalid.
   | ReceivedData
     -- ^ The writer sent a data frame. This should not actually be
     -- an exception, but data frames are not yet supported by this
     -- library.
 
-decompress :: Bytes -> Maybe (Chunks Uncompressed)
+decompress :: Bytes -> Either Exception (Chunks Uncompressed)
 decompress !raw = do
-  contents <- either (\_ -> Nothing) (Just . Chunks.concat) (Zlib.decompress raw)
-  Parser.parseBytesMaybe
+  contents <- bimap (\_ -> Decompression) Chunks.concat (Zlib.decompress raw)
+  Parser.parseBytesEither
     ( let go !bldr = Latin.opt >>= \case
             Nothing -> Parser.effect (Builder.freeze bldr)
             Just c -> case c of
-              '2' -> Parser.any () >>= \case
+              '2' -> Parser.any MalformedCompressedFrame >>= \case
                 -- We only support JSON.
                 0x4A -> do
-                  !seqNo <- BE.word32 ()
-                  !szW <- BE.word32 ()
+                  !seqNo <- BE.word32 MalformedCompressedFrame
+                  !szW <- BE.word32 MalformedCompressedFrame
                   let sz = fromIntegral @Word32 @Int szW
-                  !rawJson <- Parser.take () sz
+                  !rawJson <- Parser.take MalformedCompressedFrame sz
                   let !v = Json seqNo rawJson
                   go =<< Parser.effect (Builder.push v bldr)
-                _ -> Parser.fail ()
-              _ -> Parser.fail ()
+                _ -> Parser.fail MalformedCompressedFrame
+              _ -> Parser.fail MalformedCompressedFrame
       in Parser.effect Builder.new >>= go
     ) contents
 
@@ -124,12 +128,12 @@ read conn = receiveExactly conn (1 + 1 + 4) >>= \case
               ReceiveReset -> pure (Left ResetConnection)
               ReceiveHostUnreachable -> pure (Left Unreachable)
             Right payload -> case decompress (Bytes.fromByteArray payload) of
-              Just chunks -> ack (lastSequenceNumber chunks) conn >>= \case
+              Right chunks -> ack (lastSequenceNumber chunks) conn >>= \case
                 Left err -> case err of
                   SendShutdown -> pure (Left ClosedConnectionPoorly)
                   SendReset -> pure (Left ResetConnection)
                 Right _ -> pure (Right (Compressed payload chunks))
-              Nothing -> pure (Left MalformedCompressedFrame)
+              Left err -> pure (Left err)
         -- It is up to the user to decode the JSON payload.
         0x4A -> do
           let szW = u32
