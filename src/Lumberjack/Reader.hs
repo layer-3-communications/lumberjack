@@ -76,6 +76,9 @@ data Exception
     -- ^ The writer sent a data frame. This should not actually be
     -- an exception, but data frames are not yet supported by this
     -- library.
+  | LargeFrame
+    -- ^ The writer sent a data frame larger than 16MB. To prevent
+    -- both accidental and intentional DoS, we reject such frames.
 
 decompress :: Bytes -> Either Exception (Chunks Uncompressed)
 decompress !raw = do
@@ -121,36 +124,42 @@ read conn = receiveExactly conn (1 + 1 + 4) >>= \case
         -- The user is responsible for performing decompression.
         0x43 -> do
           let szW = u32
-              sz = fromIntegral @Word32 @Int szW
-          receiveExactly conn sz >>= \case
-            Left err -> case err of
-              ReceiveShutdown -> pure (Left ClosedConnectionPoorly)
-              ReceiveReset -> pure (Left ResetConnection)
-              ReceiveHostUnreachable -> pure (Left Unreachable)
-            Right payload -> case decompress (Bytes.fromByteArray payload) of
-              Right chunks -> ack (lastSequenceNumber chunks) conn >>= \case
+          if szW > 16777216
+            then pure (Left LargeFrame)
+            else do
+              let sz = fromIntegral @Word32 @Int szW
+              receiveExactly conn sz >>= \case
                 Left err -> case err of
-                  SendShutdown -> pure (Left ClosedConnectionPoorly)
-                  SendReset -> pure (Left ResetConnection)
-                Right _ -> pure (Right (Compressed payload chunks))
-              Left err -> pure (Left err)
+                  ReceiveShutdown -> pure (Left ClosedConnectionPoorly)
+                  ReceiveReset -> pure (Left ResetConnection)
+                  ReceiveHostUnreachable -> pure (Left Unreachable)
+                Right payload -> case decompress (Bytes.fromByteArray payload) of
+                  Right chunks -> ack (lastSequenceNumber chunks) conn >>= \case
+                    Left err -> case err of
+                      SendShutdown -> pure (Left ClosedConnectionPoorly)
+                      SendReset -> pure (Left ResetConnection)
+                    Right _ -> pure (Right (Compressed payload chunks))
+                  Left err -> pure (Left err)
         -- It is up to the user to decode the JSON payload.
         0x4A -> do
           let szW = u32
-              sz = fromIntegral @Word32 @Int szW
-              seqNo = u32
-          receiveExactly conn sz >>= \case
-            Left err -> case err of
-              ReceiveShutdown -> pure (Left ClosedConnectionPoorly)
-              ReceiveReset -> pure (Left ResetConnection)
-              ReceiveHostUnreachable -> pure (Left Unreachable)
-            Right payload -> ack seqNo conn >>= \case
-              Left err -> case err of
-                SendShutdown -> pure (Left ClosedConnectionPoorly)
-                SendReset -> pure (Left ResetConnection)
-              Right _ -> do
-                let !payload' = Bytes.fromByteArray payload
-                pure (Right (Uncompressed (Json seqNo payload')))
+          if szW > 16777216
+            then pure (Left LargeFrame)
+            else do
+              let sz = fromIntegral @Word32 @Int szW
+                  seqNo = u32
+              receiveExactly conn sz >>= \case
+                Left err -> case err of
+                  ReceiveShutdown -> pure (Left ClosedConnectionPoorly)
+                  ReceiveReset -> pure (Left ResetConnection)
+                  ReceiveHostUnreachable -> pure (Left Unreachable)
+                Right payload -> ack seqNo conn >>= \case
+                  Left err -> case err of
+                    SendShutdown -> pure (Left ClosedConnectionPoorly)
+                    SendReset -> pure (Left ResetConnection)
+                  Right _ -> do
+                    let !payload' = Bytes.fromByteArray payload
+                    pure (Right (Uncompressed (Json seqNo payload')))
         _ -> pure (Left InvalidFrameType)
       0x31 -> pure (Left VersionOne)
       _ -> pure (Left InvalidVersion)
