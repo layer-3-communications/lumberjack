@@ -7,6 +7,7 @@
 module Lumberjack.Reader
   ( Frame(..)
   , Uncompressed(..)
+  , Exception(..)
   , read
   ) where
 
