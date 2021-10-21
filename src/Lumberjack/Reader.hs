@@ -36,17 +36,29 @@ import qualified Data.Bytes.Parser as Parser
 import qualified Socket.Stream.Uninterruptible.Bytes as StreamBytes
 import qualified Zlib
 
+-- | A lumberjack frame, either many compressed messages or a single
+-- uncompressed message. In the case of compressed messages, the original
+-- concatenated sequence (compressed with @DEFLATE@) is provided in case
+-- the user wants to do something with it.
 data Frame
   = Compressed
       !ByteArray -- ^ Compressed frames
       !(Chunks Uncompressed) -- ^ Decompressed frames
   | Uncompressed {-# UNPACK #-} !Uncompressed
 
+-- | A single message. Only JSON messages are supported since all Elastic
+-- beats have moved to this format. Note that this data type does not
+-- validate or parse the JSON. It merely communicates that the frame
+-- claims that the payload is JSON. Use the @json-syntax@ library to
+-- decode this.
 data Uncompressed
   = Json
       !Word32 -- ^ Sequence number
       {-# UNPACK #-} !Bytes -- ^ Raw JSON bytes 
 
+-- | Anything that can go wrong. This includes socket-related issues and
+-- parsing issues. It is not possible to recover from any of these, and
+-- the best course of action is to log the exception and close the connection.
 data Exception
   = ClosedConnection
     -- ^ This is normal and does not indicate a problem. The connection
