@@ -4,8 +4,3 @@ source-repository-package
   type: git
   location: https://github.com/andrewthad/sockets
   tag: 644b8b52aed4237eac2dd42eaf889753d4392ac4
-
-source-repository-package
-  type: git
-  location: https://github.com/byteverse/zlib-bytes
-  tag: 5da94aba716329a757b8c7d24dca1aa422a1d60b
