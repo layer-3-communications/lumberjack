@@ -74,9 +74,13 @@ data Exception
     -- ^ There is a networking problem.
   | VersionOne
     -- ^ The writer is using version one of the lumberjack protocol.
-  | InvalidVersion
-    -- ^ The writer specified a lumberjack protocol version that
-    -- does not exist.
+  | VersionThree
+    -- ^ The writer is using version three of the lumberjack protocol.
+  | VersionFour
+    -- ^ The writer is using version three of the lumberjack protocol.
+  | InvalidPreface
+    -- ^ The preface claims that the version is greater than 4. This
+    -- is probably not actually Lumberjack traffic.
   | InvalidFrameType
     -- ^ The writer specified a lumberjack protocol version that
     -- does not exist.
@@ -177,7 +181,9 @@ read conn = do
                       pure (Right (Uncompressed (Json seqNo payload')))
           _ -> pure (Left InvalidFrameType)
         0x31 -> pure (Left VersionOne)
-        _ -> pure (Left InvalidVersion)
+        0x33 -> pure (Left VersionThree)
+        0x34 -> pure (Left VersionFour)
+        _ -> pure (Left InvalidPreface)
 
 ack :: Word32 -> Connection -> IO (Either (SendException 'Uninterruptible) ())
 ack !seqNo !conn = do
